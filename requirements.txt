@@ -4,5 +4,6 @@ SQLAlchemy==2.0.35
 pydantic==2.9.2
 python-multipart==0.0.9
 rapidfuzz==3.9.7
-psycopg[binary]==3.2.1
+psycopg[binary]==3.2.10
+
 
