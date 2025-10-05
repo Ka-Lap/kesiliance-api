@@ -217,4 +217,3 @@ def match_entity_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="matches_entity_{entity_id}.csv"'},
     )
-
