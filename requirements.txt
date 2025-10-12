@@ -7,3 +7,5 @@ rapidfuzz==3.9.7
 psycopg[binary]==3.2.10
 
 
+
+requests==2.32.3

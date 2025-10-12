@@ -1,3 +1,5 @@
+from fastapi import Body
+import requests
 import os, io, csv
 from typing import List, Optional
 
@@ -217,3 +219,29 @@ def match_entity_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="matches_entity_{entity_id}.csv"'},
     )
+
+@app.post("/admin/refresh_sanctions")
+def admin_refresh_sanctions(
+    source_url: str = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    _: None = Depends(require_api_key),
+):
+    r = requests.get(source_url, timeout=30)
+    if r.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Download failed: {r.status_code}")
+    content = r.content.decode("utf-8", errors="ignore")
+    reader = csv.DictReader(io.StringIO(content))
+    lower = [h.strip().lower() for h in (reader.fieldnames or [])]
+    if "name" not in lower:
+        raise HTTPException(status_code=400, detail="CSV must include \name\.")
+    inserted = 0
+    for row in reader:
+        keys = {k.lower(): k for k in row.keys()}
+        name = (row.get(keys.get("name"), "") or "").strip()
+        if not name:
+            continue
+        country = (row.get(keys.get("country"), "") or "").strip() or None
+        source = (row.get(keys.get("source"), "") or "").strip() or None
+        db.add(models.Sanction(name=name, country=country, source=source)); inserted += 1
+    db.commit()
+    return {\"inserted\": inserted, \"source_url\": source_url}
