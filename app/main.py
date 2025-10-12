@@ -1,9 +1,8 @@
-from fastapi import Body
-import requests
 import os, io, csv
 from typing import List, Optional
+import requests
 
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Security
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Security, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security.api_key import APIKeyHeader
@@ -12,41 +11,35 @@ from rapidfuzz import fuzz
 
 from .database import Base, engine, get_db
 from . import models
-from .schemas import (
-    EntityCreate, EntityOut,
-    SanctionCreate, SanctionOut,
-    MatchOut,
-)
+from .schemas import EntityCreate, EntityOut, SanctionCreate, SanctionOut, MatchOut
 
-# ─────────── DB init ───────────
 Base.metadata.create_all(bind=engine)
 
-# ─────────── App ───────────
 app = FastAPI(title="KesiLiance API")
+
+ALLOWED_ORIGINS = [
+    "https://kesiliance-frontend-lwqwoyla6-ka-laps-projects.vercel.app",
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # en prod: remplace par ton domaine
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─────────── API Key (x-api-key) ───────────
 api_key_header = APIKeyHeader(name="x-api-key", auto_error=False)
 
 def require_api_key(api_key: str = Security(api_key_header)):
-    """
-    Vérifie le header x-api-key contre la variable d'env API_KEY.
-    Si API_KEY n'est pas définie côté serveur, on laisse passer (utile en dev local).
-    """
     expected = os.getenv("API_KEY")
     if not expected:
         return
     if api_key != expected:
         raise HTTPException(status_code=401, detail="Invalid API key")
 
-# ─────────── Health & Root (non protégés) ───────────
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -55,7 +48,6 @@ def health():
 def root():
     return {"message": "Bienvenue sur KesiLiance API"}
 
-# ─────────── Entities ───────────
 @app.post("/entities", response_model=EntityOut)
 def create_entity(
     payload: EntityCreate,
@@ -63,9 +55,7 @@ def create_entity(
     _: None = Depends(require_api_key),
 ):
     e = models.Entity(name=payload.name.strip(), country=payload.country)
-    db.add(e)
-    db.commit()
-    db.refresh(e)
+    db.add(e); db.commit(); db.refresh(e)
     return e
 
 @app.get("/entities", response_model=List[EntityOut])
@@ -93,7 +83,8 @@ def import_entities(
     try:
         text_stream = io.TextIOWrapper(file.file, encoding="utf-8")
         reader = csv.DictReader(text_stream)
-        if not reader.fieldnames or "name" not in [h.strip().lower() for h in reader.fieldnames]:
+        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        if "name" not in headers:
             raise HTTPException(status_code=400, detail="Le CSV doit contenir 'name' (et optionnellement 'country').")
         inserted = 0
         for row in reader:
@@ -102,15 +93,13 @@ def import_entities(
             if not name:
                 continue
             country = (row.get(keys.get("country"), "") or "").strip() or None
-            db.add(models.Entity(name=name, country=country))
-            inserted += 1
+            db.add(models.Entity(name=name, country=country)); inserted += 1
         db.commit()
         return {"inserted": inserted}
     finally:
         try: file.file.close()
         except Exception: pass
 
-# ─────────── Sanctions ───────────
 @app.post("/sanctions/import")
 def import_sanctions(
     file: UploadFile = File(...),
@@ -122,8 +111,8 @@ def import_sanctions(
     try:
         text_stream = io.TextIOWrapper(file.file, encoding="utf-8")
         reader = csv.DictReader(text_stream)
-        lower_headers = [h.strip().lower() for h in (reader.fieldnames or [])]
-        if "name" not in lower_headers:
+        headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+        if "name" not in headers:
             raise HTTPException(status_code=400, detail="Le CSV doit contenir 'name'.")
         inserted = 0
         for row in reader:
@@ -133,8 +122,7 @@ def import_sanctions(
                 continue
             country = (row.get(keys.get("country"), "") or "").strip() or None
             source = (row.get(keys.get("source"), "") or "").strip() or None
-            db.add(models.Sanction(name=name, country=country, source=source))
-            inserted += 1
+            db.add(models.Sanction(name=name, country=country, source=source)); inserted += 1
         db.commit()
         return {"inserted": inserted}
     finally:
@@ -158,7 +146,6 @@ def list_sanctions(
     items = query.order_by(models.Sanction.id.desc()).offset(offset).limit(limit).all()
     return items
 
-# ─────────── Matching ───────────
 @app.get("/match/{entity_id}", response_model=List[MatchOut])
 def match_entity(
     entity_id: int,
@@ -228,12 +215,12 @@ def admin_refresh_sanctions(
 ):
     r = requests.get(source_url, timeout=30)
     if r.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Download failed: {r.status_code}")
+        raise HTTPException(status_code=400, detail=f"Téléchargement échoué: {r.status_code}")
     content = r.content.decode("utf-8", errors="ignore")
     reader = csv.DictReader(io.StringIO(content))
-    lower = [h.strip().lower() for h in (reader.fieldnames or [])]
-    if "name" not in lower:
-        raise HTTPException(status_code=400, detail="CSV must include \name\.")
+    headers = [h.strip().lower() for h in (reader.fieldnames or [])]
+    if "name" not in headers:
+        raise HTTPException(status_code=400, detail="Le CSV doit contenir 'name'.")
     inserted = 0
     for row in reader:
         keys = {k.lower(): k for k in row.keys()}
@@ -244,4 +231,5 @@ def admin_refresh_sanctions(
         source = (row.get(keys.get("source"), "") or "").strip() or None
         db.add(models.Sanction(name=name, country=country, source=source)); inserted += 1
     db.commit()
-    return {\"inserted\": inserted, \"source_url\": source_url}
+    return {"inserted": inserted, "source_url": source_url}
+
